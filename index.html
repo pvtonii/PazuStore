@@ -54,6 +54,8 @@ label{font-size:12px;color:var(--text2);display:block;margin-bottom:3px;}
 .bg-teal{background:var(--teal-50);color:var(--teal-800);}
 .bg-coral{background:var(--coral-50);color:var(--coral-800);}
 .irow{padding:12px 0;border-bottom:0.5px solid rgba(0,0,0,0.07);}
+.irow.vendido{opacity:0.45;}
+.irow.vendido .iname{text-decoration:line-through;color:var(--text2);}
 .irow:last-child{border-bottom:none;}
 .iname{font-size:14px;font-weight:500;color:var(--text);margin-bottom:4px;}
 .isub{font-size:12px;color:var(--text2);display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
@@ -387,7 +389,7 @@ function renderInv(){
         const vv=getVV(i.sku),lucro=vv-(parseFloat(i.valorPago)||0);
         const mg=(parseFloat(i.valorPago)||0)>0?lucro/parseFloat(i.valorPago)*100:0;
         const sv=getSV(i.sku);
-        return `<div class="irow">
+        return `<div class="irow ${sv==='Vendido'?'vendido':''}">
           <div style="display:flex;justify-content:space-between;gap:8px">
             <div style="flex:1;min-width:0">
               <div class="iname">${i.nome}</div>
@@ -406,7 +408,11 @@ function renderInv(){
               </div>
             </div>
           </div>
-          <div class="isub" style="margin-top:4px"><span>${i.localCompra||'—'}</span><span>${i.dataCompra||'—'}</span></div>
+          <div class="isub" style="margin-top:4px">
+            <span>${i.localCompra||'—'}</span>
+            <span>Compra: ${i.dataCompra||'—'}</span>
+            ${(()=>{const l=S.listagem.find(x=>x.sku===i.sku&&x.status==='Vendido');return l&&l.dataVenda?`<span>Venda: <b>${l.dataVenda}</b></span>`:''})()}
+          </div>
         </div>`;}).join('')}
     </div>`}`;
 }
@@ -430,7 +436,7 @@ function renderLst(){
     <div class="card" style="padding:0 14px">
       ${items.map(l=>{
         const inv=S.inventario.find(i=>i.sku===l.sku), nome=inv?inv.nome:l.sku;
-        return `<div class="irow">
+        return `<div class="irow ${l.status==='Vendido'?'vendido':''}">
           <div style="display:flex;justify-content:space-between;gap:8px">
             <div style="flex:1;min-width:0">
               <div class="iname">${nome}</div>
@@ -447,12 +453,13 @@ function renderLst(){
             <div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;flex-shrink:0">
               ${bVenda(l.status)}
               <div style="display:flex;gap:4px;margin-top:2px">
+                <button class="btn btn-sm" onclick='dupLst(${JSON.stringify(l)})' style="padding:4px 8px" title="Duplicar">⧉</button>
                 <button class="btn btn-sm" onclick='openLstModalObj(${JSON.stringify(l)})' style="padding:4px 8px">✏️</button>
                 <button class="btn btn-sm btn-danger" onclick="delLst('${l.id}')" style="padding:4px 8px">🗑</button>
               </div>
             </div>
           </div>
-          <div class="isub" style="margin-top:4px"><span>${l.dataListagem||'—'}</span>${l.formaPgto?`<span>${l.formaPgto}</span>`:''}</div>
+          <div class="isub" style="margin-top:4px"><span>Listado: ${l.dataListagem||'—'}</span>${l.dataVenda?`<span>Vendido: ${l.dataVenda}</span>`:''} ${l.formaPgto?`<span>${l.formaPgto}</span>`:''}</div>
         </div>`;}).join('')}
     </div>`}`;
 }
@@ -607,7 +614,9 @@ function openLstModal(item){
           <div><label>Forma de pgto</label><select id="l_pgto"><option value="">—</option>${c.formasPgto.map(x=>`<option ${e&&e.formaPgto===x?'selected':''}>${x}</option>`).join('')}</select></div>
         </div>
         <label>Status</label>
-        <select id="l_st">${c.statusVenda.map(x=>`<option ${e&&e.status===x?'selected':''}>${x}</option>`).join('')}</select>
+        <select id="l_st">${c.statusVenda.map(x=>`<option ${(e?e.status===x:x==='Ativo')?'selected':''}>${x}</option>`).join('')}</select>
+        <label>Data da venda</label>
+        <input type="date" id="l_dvnd" value="${e?e.dataVenda||'':''}"/>
         <button class="btn btn-primary" style="width:100%;margin-top:4px" onclick="saveLst('${e?e.id:''}')">Salvar</button>
       </div>
     </div>`;
@@ -625,6 +634,7 @@ async function saveLst(editId){
     valorListado:document.getElementById('l_vlst').value,
     valorAlterado:document.getElementById('l_valt').value,
     valorVendido:document.getElementById('l_vvnd').value,
+    dataVenda:document.getElementById('l_dvnd').value,
     formaPgto:document.getElementById('l_pgto').value,
     status,
   };
@@ -635,6 +645,11 @@ async function saveLst(editId){
   saveL(); cm(); render(); await pushUpsert('Listagem',listing);
 }
 
+function dupLst(l){
+  // Open listing modal pre-filled with same item but blank id, blank platform, status=Ativo
+  const dup={...l, id:'', plataforma:'', status:'Ativo', valorVendido:'', dataVenda:'', formaPgto:''};
+  openLstModal(dup);
+}
 function cm(){ document.getElementById('mc').innerHTML=''; }
 
 // ── INIT ──────────────────────────────────────────────────
