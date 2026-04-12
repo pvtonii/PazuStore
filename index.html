@@ -212,10 +212,20 @@ async function pushDelete(sheet,id){ await apiPost({action:'delete',sheet,id}); 
 async function pushConfig(){ await apiPost({action:'saveConfig',config:S.config}); }
 
 // ── HELPERS ────────────────────────────────────────────────
-function genSKU(){ return 'GG-'+Date.now().toString(36).toUpperCase().slice(-5); }
+function genSKU(){
+  const nums=S.inventario.map(i=>{ const m=String(i.sku||'').match(/^(\d+)$/); return m?parseInt(m[1]):0; });
+  const next=(nums.length?Math.max(...nums):0)+1;
+  return String(next).padStart(4,'0');
+}
 function fm(v){ return '$'+(parseFloat(v)||0).toFixed(2); }
 function getVV(sku){ const l=S.listagem.find(l=>l.sku===sku&&l.status==='Vendido'); return l?parseFloat(l.valorVendido)||0:0; }
-function getSV(sku){ const l=S.listagem.find(l=>l.sku===sku); return l?l.status||'':''; }
+function getSV(sku){
+  const ls=S.listagem.filter(l=>l.sku===sku);
+  if(!ls.length) return '';
+  if(ls.some(l=>l.status==='Vendido')) return 'Vendido';
+  if(ls.some(l=>l.status==='Ativo')) return 'Ativo';
+  return ls[0].status||'';
+}
 
 // ── NAV ────────────────────────────────────────────────────
 function go(t){
@@ -294,7 +304,7 @@ function renderDash(){
   },0);
 
   const emEst=inv.filter(i=>i.statusItem==='Em Estoque').length;
-  const listd=inv.filter(i=>i.statusItem==='Listado').length;
+  const ativos=inv.filter(i=>getSV(i.sku)==='Ativo').length;
   const totV=inv.filter(i=>getSV(i.sku)==='Vendido').length;
   const top5=[...vends].map(i=>({...i,lucro:getVV(i.sku)-(parseFloat(i.valorPago)||0)}))
     .sort((a,b)=>b.lucro-a.lucro).slice(0,5);
@@ -329,7 +339,7 @@ function renderDash(){
     <p class="stitle">Itens por status</p>
     <div class="mgrid">
       <div class="metric"><div class="mlbl">Em estoque</div><div class="mval">${emEst}</div></div>
-      <div class="metric"><div class="mlbl">Listados</div><div class="mval">${listd}</div></div>
+      <div class="metric"><div class="mlbl">Ativos</div><div class="mval">${ativos}</div></div>
       <div class="metric"><div class="mlbl">Vendidos</div><div class="mval">${totV}</div></div>
       <div class="metric"><div class="mlbl">Total inventário</div><div class="mval">${inv.length}</div></div>
     </div>
@@ -346,6 +356,9 @@ function renderDash(){
           </div>
         </div>`).join('')}
     </div>
+    <hr class="hr">
+    <p class="stitle">Lucro semanal</p>
+    ${renderWeekly(lst,inv)}
     ${top5.length?`
     <hr class="hr">
     <p class="stitle">Top 5 mais lucrativos</p>
@@ -363,6 +376,55 @@ function renderDash(){
           </div>
         </div>`).join('')}
     </div>`:''}`;
+}
+
+
+// ── WEEKLY REPORT ─────────────────────────────────────────
+function renderWeekly(lst,inv){
+  // Group sold listings by week (Mon-Sun), last 8 weeks
+  const sold=lst.filter(l=>l.status==='Vendido'&&l.dataVenda);
+  if(!sold.length) return '<div class="empty" style="padding:16px 0">Nenhuma venda com data registrada ainda</div>';
+
+  // Get monday of a date's week
+  function monOf(d){ const dt=new Date(d+'T12:00:00'); const day=dt.getDay(); const diff=day===0?-6:1-day; dt.setDate(dt.getDate()+diff); return dt.toISOString().slice(0,10); }
+
+  const weeks={};
+  sold.forEach(l=>{
+    const wk=monOf(l.dataVenda);
+    if(!weeks[wk]) weeks[wk]={vendas:0,investido:0,lucro:0,count:0};
+    const vv=parseFloat(l.valorVendido)||0;
+    const invItem=inv.find(i=>i.sku===l.sku);
+    const pago=invItem?parseFloat(invItem.valorPago)||0:0;
+    weeks[wk].vendas+=vv;
+    weeks[wk].investido+=pago;
+    weeks[wk].lucro+=vv-pago;
+    weeks[wk].count++;
+  });
+
+  const sorted=Object.entries(weeks).sort((a,b)=>b[0].localeCompare(a[0])).slice(0,8);
+
+  function fmtWk(mon){
+    const d=new Date(mon+'T12:00:00');
+    const sun=new Date(d); sun.setDate(d.getDate()+6);
+    const fmt=dt=>dt.toLocaleDateString('pt-BR',{month:'short',day:'numeric'});
+    return fmt(d)+' – '+fmt(sun);
+  }
+
+  return `<div class="card" style="padding:0 14px">
+    ${sorted.map(([wk,data])=>`
+      <div class="irow">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-size:13px;font-weight:500;color:var(--text)">${fmtWk(wk)}</div>
+            <div style="font-size:11px;color:var(--text2);margin-top:2px">${data.count} ${data.count===1?'item':'itens'} vendidos</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:13px;font-weight:500;color:var(--teal-600)">${fm(data.vendas)}</div>
+            <div style="font-size:11px;color:var(--text2)">lucro: <span class="${data.lucro>=0?'pos':'neg'}">${fm(data.lucro)}</span></div>
+          </div>
+        </div>
+      </div>`).join('')}
+  </div>`;
 }
 
 // ── INVENTÁRIO ────────────────────────────────────────────
@@ -640,9 +702,21 @@ async function saveLst(editId){
   };
   if(editId){ const idx=S.listagem.findIndex(l=>l.id===editId); if(idx>=0) S.listagem[idx]=listing; else S.listagem.push(listing); }
   else S.listagem.push(listing);
+  // Se vendido, expirar todas as outras listagens do mesmo SKU
+  const expiredItems=[];
+  if(status==='Vendido'){
+    S.listagem.forEach(l=>{
+      if(l.sku===sku && l.id!==listing.id && l.status!=='Vendido'){
+        l.status='Expirado';
+        expiredItems.push({...l});
+      }
+    });
+  }
   const inv=S.inventario.find(i=>i.sku===sku);
   if(inv){ inv.statusItem='Listado'; await pushUpsert('Inventario',inv); }
-  saveL(); cm(); render(); await pushUpsert('Listagem',listing);
+  saveL(); cm(); render();
+  await pushUpsert('Listagem',listing);
+  for(const ex of expiredItems){ await pushUpsert('Listagem',ex); }
 }
 
 function dupLst(l){
