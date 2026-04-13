@@ -107,11 +107,11 @@ label{font-size:12px;color:var(--text2);display:block;margin-bottom:3px;}
 .ac-wrap input{margin-bottom:0;}
 .ac-drop{position:absolute;top:100%;left:0;right:0;background:var(--bg);border:0.5px solid rgba(0,0,0,0.2);border-top:none;border-radius:0 0 8px 8px;max-height:200px;overflow-y:auto;z-index:300;display:none;}
 .ac-drop.open{display:block;}
-.ac-item{padding:10px 12px;font-size:13px;cursor:pointer;border-bottom:0.5px solid rgba(0,0,0,0.06);}
+.ac-item{padding:10px 12px;font-size:13px;cursor:pointer;border-bottom:0.5px solid rgba(0,0,0,0.06);overflow:hidden;}
 .ac-item:last-child{border-bottom:none;}
 .ac-item:hover,.ac-item.selected{background:var(--pink-50);}
-.ac-item .ac-name{font-weight:500;color:var(--text);}
-.ac-item .ac-sku{font-size:11px;color:var(--text2);font-family:monospace;}
+.ac-item .ac-name{font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
+.ac-item .ac-sku{font-size:11px;color:var(--text2);font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .notice{background:var(--amber-50);border:0.5px solid var(--amber-100);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--amber-800);margin-bottom:14px;}
 </style>
 </head>
@@ -198,8 +198,17 @@ async function syncFromSheets(){
   try{
     const r=await jsonpGet(API_URL+'?action=read');
     if(r.ok){
-      S.inventario=r.data.inventario||[];
-      S.listagem=r.data.listagem||[];
+      // Normalize data from Sheets
+      S.inventario=(r.data.inventario||[]).map(i=>({
+        ...i,
+        sku: String(i.sku||'').padStart(4,'0').replace(/^0+(\d{4,})$/,'$1'),
+        dataCompra: cleanDate(i.dataCompra),
+      }));
+      S.listagem=(r.data.listagem||[]).map(l=>({
+        ...l,
+        dataListagem: cleanDate(l.dataListagem),
+        dataVenda: cleanDate(l.dataVenda),
+      }));
       S.config={...S.config,...r.data.config};
       saveL(); render();
       setSyncUI('ok','sincronizado');
@@ -216,6 +225,13 @@ function genSKU(){
   const nums=S.inventario.map(i=>{ const m=String(i.sku||'').match(/^(\d+)$/); return m?parseInt(m[1]):0; });
   const next=(nums.length?Math.max(...nums):0)+1;
   return String(next).padStart(4,'0');
+}
+function cleanDate(v){
+  if(!v) return '';
+  const s=String(v);
+  // Sheets sometimes returns full ISO timestamp like "2024-01-15T00:00:00.000Z"
+  const m=s.match(/^(\d{4}-\d{2}-\d{2})/);
+  return m?m[1]:'';
 }
 function fm(v){ return '$'+(parseFloat(v)||0).toFixed(2); }
 function getVV(sku){ const l=S.listagem.find(l=>l.sku===sku&&l.status==='Vendido'); return l?parseFloat(l.valorVendido)||0:0; }
@@ -638,8 +654,14 @@ async function saveInv(editSku){
     estadoCompra:document.getElementById('f_est').value,
     statusItem:document.getElementById('f_si').value,
   };
-  if(editSku){ const idx=S.inventario.findIndex(i=>i.sku===editSku); if(idx>=0) S.inventario[idx]=item; else S.inventario.push(item); }
-  else S.inventario.push(item);
+  if(editSku){
+    // Remove old entry (handles SKU change edge case)
+    S.inventario=S.inventario.filter(i=>i.sku!==editSku);
+    if(editSku!==item.sku) await pushDelete('Inventario',editSku);
+  }
+  // Always push (replace or new)
+  S.inventario=S.inventario.filter(i=>i.sku!==item.sku);
+  S.inventario.push(item);
   saveL(); cm(); render(); await pushUpsert('Inventario',item);
 }
 
