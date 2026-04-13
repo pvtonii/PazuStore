@@ -199,16 +199,25 @@ async function syncFromSheets(){
     const r=await jsonpGet(API_URL+'?action=read');
     if(r.ok){
       // Normalize data from Sheets
-      S.inventario=(r.data.inventario||[]).map(i=>({
+      // Normalize + deduplicate inventory by SKU (keep last entry)
+      const rawInv=(r.data.inventario||[]).map(i=>({
         ...i,
         sku: String(i.sku||'').padStart(4,'0').replace(/^0+(\d{4,})$/,'$1'),
         dataCompra: cleanDate(i.dataCompra),
       }));
-      S.listagem=(r.data.listagem||[]).map(l=>({
+      const invMap={};
+      rawInv.forEach(i=>{ if(i.sku) invMap[i.sku]=i; });
+      S.inventario=Object.values(invMap);
+
+      // Normalize + deduplicate listagem by id
+      const rawLst=(r.data.listagem||[]).map(l=>({
         ...l,
         dataListagem: cleanDate(l.dataListagem),
         dataVenda: cleanDate(l.dataVenda),
       }));
+      const lstMap={};
+      rawLst.forEach(l=>{ if(l.id) lstMap[l.id]=l; });
+      S.listagem=Object.values(lstMap);
       S.config={...S.config,...r.data.config};
       saveL(); render();
       setSyncUI('ok','sincronizado');
@@ -322,7 +331,9 @@ function renderDash(){
   const emEst=inv.filter(i=>i.statusItem==='Em Estoque').length;
   const ativos=inv.filter(i=>getSV(i.sku)==='Ativo').length;
   const totV=inv.filter(i=>getSV(i.sku)==='Vendido').length;
-  const top5=[...vends].map(i=>({...i,lucro:getVV(i.sku)-(parseFloat(i.valorPago)||0)}))
+  // Deduplicate vends by SKU (in case of leftover duplicates in state)
+  const vendsUniq=Object.values(Object.fromEntries(vends.map(i=>[i.sku,i])));
+  const top5=[...vendsUniq].map(i=>({...i,lucro:getVV(i.sku)-(parseFloat(i.valorPago)||0)}))
     .sort((a,b)=>b.lucro-a.lucro).slice(0,5);
 
   return `
