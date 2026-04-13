@@ -756,10 +756,22 @@ async function saveInv(editSku){
     estadoCompra:document.getElementById('f_est').value,
     statusItem:document.getElementById('f_si').value,
   };
+  if(editSku && editSku !== item.sku){
+    // SKU mudou — atualiza todas as listagens que usavam o SKU antigo
+    const updatedListings=[];
+    S.listagem.forEach(l=>{
+      if(l.sku===editSku){
+        l.sku=item.sku;
+        updatedListings.push({...l});
+      }
+    });
+    // Remove item antigo do Sheets
+    await pushDelete('Inventario', editSku);
+    // Salva listagens atualizadas no Sheets
+    for(const l of updatedListings){ await pushUpsert('Listagem', l); }
+  }
   if(editSku){
-    // Remove old entry (handles SKU change edge case)
     S.inventario=S.inventario.filter(i=>i.sku!==editSku);
-    if(editSku!==item.sku) await pushDelete('Inventario',editSku);
   }
   // Always push (replace or new)
   S.inventario=S.inventario.filter(i=>i.sku!==item.sku);
