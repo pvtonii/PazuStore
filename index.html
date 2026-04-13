@@ -159,7 +159,7 @@ let S = {
     statusItem:['Em Estoque','Listado'],
   }
 };
-let tab='dashboard', invF='Todos', lstF='Todos', invQ='', lstQ='';
+let tab='dashboard', invF='Todos', lstF='Todos', invQ='', lstQ='', invStatus='Todos', invSort='recente';
 try{ const s=localStorage.getItem(LS); if(s) S=JSON.parse(s); }catch(e){}
 function saveL(){ try{localStorage.setItem(LS,JSON.stringify(S));}catch(e){} }
 
@@ -484,10 +484,32 @@ function renderInv(){
       (i.localCompra||'').toLowerCase().includes(q)||(i.categoria||'').toLowerCase().includes(q);
   });
   if(invF!=='Todos') items=items.filter(i=>i.categoria===invF);
+  if(invStatus==='Vendidos') items=items.filter(i=>getSV(i.sku)==='Vendido');
+  else if(invStatus==='Ativos') items=items.filter(i=>getSV(i.sku)!=='Vendido');
+  // Sort
+  if(invSort==='az') items=[...items].sort((a,b)=>(a.nome||'').localeCompare(b.nome||''));
+  else if(invSort==='za') items=[...items].sort((a,b)=>(b.nome||'').localeCompare(a.nome||''));
+  else if(invSort==='maior') items=[...items].sort((a,b)=>(parseFloat(b.valorPago)||0)-(parseFloat(a.valorPago)||0));
+  else if(invSort==='menor') items=[...items].sort((a,b)=>(parseFloat(a.valorPago)||0)-(parseFloat(b.valorPago)||0));
+  else if(invSort==='lucro') items=[...items].sort((a,b)=>(getVV(b.sku)-(parseFloat(b.valorPago)||0))-(getVV(a.sku)-(parseFloat(a.valorPago)||0)));
+  // default: recente = ordem de inserção (sem sort)
   return `
     <div class="sbar">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
       <input placeholder="Buscar por nome, SKU, local..." value="${invQ}" oninput="invQ=this.value;render()"/>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+      <div class="frow" style="margin:0;flex:1;min-width:0">
+        ${['Todos','Ativos','Vendidos'].map(s=>`<button class="chip ${invStatus===s?'active':''}" onclick="invStatus='${s}';render()">${s}</button>`).join('')}
+      </div>
+      <select onchange="invSort=this.value;render()" style="width:auto;margin:0;padding:5px 10px;font-size:12px;flex-shrink:0">
+        <option value="recente" ${invSort==='recente'?'selected':''}>Mais recente</option>
+        <option value="az" ${invSort==='az'?'selected':''}>A → Z</option>
+        <option value="za" ${invSort==='za'?'selected':''}>Z → A</option>
+        <option value="maior" ${invSort==='maior'?'selected':''}>Maior valor pago</option>
+        <option value="menor" ${invSort==='menor'?'selected':''}>Menor valor pago</option>
+        <option value="lucro" ${invSort==='lucro'?'selected':''}>Maior lucro</option>
+      </select>
     </div>
     <div class="frow">${cats.map(c=>`<button class="chip ${invF===c?'active':''}" onclick="invF='${c}';render()">${c}</button>`).join('')}</div>
     ${items.length===0?'<div class="empty">Nenhum item encontrado</div>':`
@@ -726,7 +748,7 @@ function openInvModal(item){
         <label>Nome do item</label>
         <input id="f_nome" value="${e?e.nome||'':''}" placeholder="Ex: Blusa jeans"/>
         <div class="form-row">
-          <div><label>SKU</label><input id="f_sku" value="${e?e.sku:genSKU()}"/></div>
+          <div><label>SKU</label><input id="f_sku" value="${e?e.sku:genSKU()}" readonly style="background:var(--bg2);color:var(--text2);cursor:not-allowed;"/></div>
           <div><label>Data da compra</label><input type="date" id="f_data" value="${e?e.dataCompra||'':''}"/></div>
         </div>
         <div class="form-row">
