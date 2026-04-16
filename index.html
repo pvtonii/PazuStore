@@ -145,8 +145,7 @@ label{font-size:12px;color:var(--text2);display:block;margin-bottom:3px;}
 </div>
 <script>
 // ── STATE ──────────────────────────────────────────────────
-let SB_URL = localStorage.getItem('gigi_sb_url') || '';
-let SB_KEY = localStorage.getItem('gigi_sb_key') || '';
+let API_URL = localStorage.getItem('gigi_api_url') || '';
 const LS = 'gigi_shop_v3';
 let S = {
   inventario:[], listagem:[], gastos:[],
@@ -164,7 +163,7 @@ let tab='dashboard', invF='Todos', lstF='Todos', invQ='', lstQ='', invStatus='To
 try{ const s=localStorage.getItem(LS); if(s) S=JSON.parse(s); }catch(e){}
 function saveL(){ try{localStorage.setItem(LS,JSON.stringify(S));}catch(e){} }
 
-// ── SUPABASE SYNC ─────────────────────────────────────────
+// ── SYNC ───────────────────────────────────────────────────
 function setSyncUI(st, txt){
   const p=document.getElementById('syncPill');
   const t=document.getElementById('syncTxt');
@@ -172,104 +171,77 @@ function setSyncUI(st, txt){
   if(t) t.textContent=txt;
 }
 
-function sbHeaders(){
-  return {
-    'Content-Type':'application/json',
-    'apikey': SB_KEY,
-    'Authorization': 'Bearer '+SB_KEY,
-    'Prefer': 'return=representation',
-  };
-}
-
-async function sbGet(table, params=''){
-  const r=await fetch(SB_URL+'/rest/v1/'+table+'?'+params, { headers: sbHeaders() });
-  if(!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-async function sbUpsert(table, data){
-  const r=await fetch(SB_URL+'/rest/v1/'+table, {
-    method:'POST',
-    headers:{ ...sbHeaders(), 'Prefer':'resolution=merge-duplicates,return=minimal' },
-    body: JSON.stringify(data),
+// JSONP GET — contorna CORS
+function jsonpGet(url){ 
+  return new Promise((res,rej)=>{
+    const cbName='_gc'+Date.now();
+    const s=document.createElement('script');
+    const timer=setTimeout(()=>{ cleanup(); rej(new Error('timeout')); },12000);
+    function cleanup(){ clearTimeout(timer); delete window[cbName]; if(s.parentNode) s.parentNode.removeChild(s); }
+    window[cbName]=function(data){ cleanup(); res(data); };
+    s.onerror=()=>{ cleanup(); rej(new Error('script error')); };
+    s.src=url+(url.includes('?')?'&':'?')+'callback='+cbName+'&t='+Date.now();
+    document.head.appendChild(s);
   });
-  if(!r.ok) throw new Error(await r.text());
 }
 
-async function sbDelete(table, col, val){
-  const r=await fetch(SB_URL+'/rest/v1/'+table+'?'+col+'=eq.'+encodeURIComponent(val), {
-    method:'DELETE',
-    headers: sbHeaders(),
-  });
-  if(!r.ok) throw new Error(await r.text());
-}
-
-async function syncFromSupabase(){
-  if(!SB_URL||!SB_KEY) return;
-  setSyncUI('syncing','lendo');
-  try{
-    const [invRaw, lstRaw, gastosRaw, cfgRaw] = await Promise.all([
-      sbGet('inventario','select=*&order=created_at.asc'),
-      sbGet('listagem','select=*&order=created_at.asc'),
-      sbGet('gastos','select=*&order=data.desc'),
-      sbGet('config','select=*'),
-    ]);
-
-    // Deduplicate inventory by sku
-    const invMap={};
-    invRaw.forEach(i=>{ if(i.sku) invMap[i.sku]=i; });
-    S.inventario=Object.values(invMap);
-
-    // Deduplicate listagem by id
-    const lstMap={};
-    lstRaw.forEach(l=>{ if(l.id) lstMap[l.id]=l; });
-    S.listagem=Object.values(lstMap);
-
-    S.gastos=gastosRaw||[];
-
-    // Config stored as key-value rows
-    if(cfgRaw&&cfgRaw.length){
-      cfgRaw.forEach(row=>{
-        if(row.chave&&row.valores){
-          try{ S.config[row.chave]=JSON.parse(row.valores); }catch(e){}
-        }
-      });
-    }
-
-    saveL(); render();
-    setSyncUI('ok','sincronizado');
-  }catch(e){ setSyncUI('error','sem conexão'); console.error(e); }
-}
-
-async function pushUpsert(table, data){ 
-  if(!SB_URL||!SB_KEY) return;
-  setSyncUI('syncing','salvando');
-  try{ await sbUpsert(table, data); setSyncUI('ok','salvo'); }
-  catch(e){ setSyncUI('error','erro'); console.error(e); }
-}
-async function pushUpsertGasto(g){ await pushUpsert('gastos',g); }
-async function pushDeleteGasto(id){ 
-  if(!SB_URL||!SB_KEY) return;
-  setSyncUI('syncing','salvando');
-  try{ await sbDelete('gastos','id',id); setSyncUI('ok','salvo'); }
-  catch(e){ setSyncUI('error','erro'); }
-}
-async function pushDelete(table, id){
-  if(!SB_URL||!SB_KEY) return;
-  setSyncUI('syncing','salvando');
-  const col = table==='inventario'?'sku':'id';
-  try{ await sbDelete(table,col,id); setSyncUI('ok','salvo'); }
-  catch(e){ setSyncUI('error','erro'); console.error(e); }
-}
-async function pushConfig(){
-  if(!SB_URL||!SB_KEY) return;
+// POST no-cors — escreve sem ler resposta (Apps Script aceita)
+async function apiPost(body){
+  if(!API_URL) return;
   setSyncUI('syncing','salvando');
   try{
-    const rows=Object.entries(S.config).map(([chave,valores])=>({chave,valores:JSON.stringify(valores)}));
-    await sbUpsert('config',rows);
+    await fetch(API_URL,{ method:'POST', body:JSON.stringify(body) });
     setSyncUI('ok','salvo');
   }catch(e){ setSyncUI('error','erro'); }
 }
+
+async function syncFromSheets(){
+  if(!API_URL) return;
+  setSyncUI('syncing','lendo');
+  try{
+    const r=await jsonpGet(API_URL+'?action=read');
+    if(r.ok){
+      // Normalize data from Sheets
+      // Normalize + deduplicate inventory by SKU (keep last entry)
+      const rawInv=(r.data.inventario||[]).map(i=>({
+        ...i,
+        sku: String(i.sku||''),
+        dataCompra: cleanDate(i.dataCompra),
+      }));
+      const invMap={};
+      rawInv.forEach(i=>{ if(i.sku) invMap[i.sku]=i; });
+      S.inventario=Object.values(invMap);
+
+      // Normalize + deduplicate listagem by id
+      const rawLst=(r.data.listagem||[]).map(l=>({
+        ...l,
+        dataListagem: cleanDate(l.dataListagem),
+        dataVenda: cleanDate(l.dataVenda),
+      }));
+      const lstMap={};
+      rawLst.forEach(l=>{ if(l.id) lstMap[l.id]=l; });
+      S.listagem=Object.values(lstMap);
+
+      // Gastos
+      const rawGastos=(r.data.gastos||[]).map(g=>({
+        ...g,
+        data: cleanDate(g.data),
+      }));
+      const gastosMap={};
+      rawGastos.forEach(g=>{ if(g.id) gastosMap[g.id]=g; });
+      S.gastos=Object.values(gastosMap);
+      S.config={...S.config,...r.data.config};
+      saveL(); render();
+      setSyncUI('ok','sincronizado');
+    } else { setSyncUI('error','erro'); }
+  }catch(e){ setSyncUI('error','sem conexão'); }
+}
+
+async function pushUpsert(sheet,data){ await apiPost({action:'upsert',sheet,data}); }
+async function pushUpsertGasto(g){ await apiPost({action:'upsert',sheet:'Gastos',data:g}); }
+async function pushDeleteGasto(id){ await apiPost({action:'delete',sheet:'Gastos',id}); }
+async function pushDelete(sheet,id){ await apiPost({action:'delete',sheet,id}); }
+async function pushConfig(){ await apiPost({action:'saveConfig',config:S.config}); }
 
 // ── HELPERS ────────────────────────────────────────────────
 function genSKU(){
@@ -310,7 +282,7 @@ function go(t){
 // ── RENDER ────────────────────────────────────────────────
 function render(){
   const c=document.getElementById('content');
-  if(!SB_URL||!SB_KEY){ c.innerHTML=renderSetup(); return; }
+  if(!API_URL){ c.innerHTML=renderSetup(); return; }
   if(tab==='dashboard') c.innerHTML=renderDash();
   else if(tab==='inventario') c.innerHTML=renderInv();
   else if(tab==='listagem') c.innerHTML=renderLst();
@@ -321,30 +293,26 @@ function render(){
 // ── SETUP ─────────────────────────────────────────────────
 function renderSetup(){
   return `<div class="setup">
-    <h2>Conectar ao Supabase</h2>
-    <p>Configure uma vez e os dados ficam salvos e sincronizados em tempo real.</p>
+    <h2>Conectar ao Google Sheets</h2>
+    <p>Configure uma vez e todos os dados ficam salvos no seu Sheets automaticamente.</p>
     <ol>
-      <li>Acesse <b>supabase.com</b> e crie uma conta gratuita</li>
-      <li>Crie um novo projeto</li>
-      <li>Vá em <b>Project Settings → API</b></li>
-      <li>Copie a <b>Project URL</b> e a chave <b>anon public</b></li>
+      <li>Abra <b>Google Sheets</b> e crie uma planilha nova</li>
+      <li>Menu <b>Extensões → Apps Script</b></li>
+      <li>Apague o código existente, cole o <b>Code.gs</b> e salve</li>
+      <li>Clique <b>Implantar → Nova implantação</b></li>
+      <li>Tipo: <b>App da Web</b> · Executar como: <b>Eu</b> · Acesso: <b>Qualquer pessoa</b></li>
+      <li>Clique <b>Implantar</b>, autorize e copie a URL</li>
     </ol>
-    <label>Project URL</label>
-    <input type="url" id="sbUrlIn" placeholder="https://xxxxxxxxxxx.supabase.co" style="margin-bottom:10px"/>
-    <label>Anon Key</label>
-    <input type="text" id="sbKeyIn" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." />
-    <button class="btn btn-primary" style="width:100%" onclick="saveSupabaseConfig()">Salvar e conectar</button>
+    <label>URL do Apps Script</label>
+    <input type="url" id="urlIn" placeholder="https://script.google.com/macros/s/..." />
+    <button class="btn btn-primary" style="width:100%" onclick="saveUrl()">Salvar e conectar</button>
   </div>`;
 }
-function saveSupabaseConfig(){
-  const url=document.getElementById('sbUrlIn').value.trim();
-  const key=document.getElementById('sbKeyIn').value.trim();
-  if(!url.includes('supabase.co')){ alert('URL inválida — deve ser do Supabase'); return; }
-  if(!key){ alert('Cole a anon key'); return; }
-  SB_URL=url; SB_KEY=key;
-  localStorage.setItem('gigi_sb_url',url);
-  localStorage.setItem('gigi_sb_key',key);
-  render(); syncFromSupabase();
+function saveUrl(){
+  const v=document.getElementById('urlIn').value.trim();
+  if(!v.startsWith('https://script.google.com')){ alert('URL inválida'); return; }
+  API_URL=v; localStorage.setItem('gigi_api_url',v);
+  render(); syncFromSheets();
 }
 
 // ── DASHBOARD ─────────────────────────────────────────────
@@ -389,7 +357,7 @@ function renderDash(){
   return `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
       <p class="stitle" style="margin:0">Resumo financeiro</p>
-      <button class="btn btn-sm" onclick="syncFromSupabase()">↻ Atualizar</button>
+      <button class="btn btn-sm" onclick="syncFromSheets()">↻ Atualizar</button>
     </div>
     <div class="mgrid">
       <div class="metric"><div class="mlbl">Total investido</div><div class="mval">${fm(totalPago)}</div></div>
@@ -706,7 +674,7 @@ function renderCfg(){
     <div class="addtag"><input id="nt_${key}" placeholder="Adicionar..." onkeydown="if(event.key==='Enter')addTag('${key}')"/>
     <button class="btn btn-sm btn-primary" onclick="addTag('${key}')">+</button></div></div>`;
   return `
-    <div class="notice">Alterações são salvas automaticamente no Supabase.</div>
+    <div class="notice">Alterações são salvas automaticamente no Sheets.</div>
     <div class="card">
       ${sec('Categorias','categorias')}${sec('Locais de compra','locaisCompra')}
       ${sec('Estados da compra','estadosCompra')}${sec('Status da venda','statusVenda')}
@@ -715,28 +683,18 @@ function renderCfg(){
     </div>
     <hr class="hr">
     <div class="card">
-      <p class="stitle">Conexão Supabase</p>
-      <label>Project URL</label>
-      <input id="sbUrlEdit" value="${SB_URL}" placeholder="https://xxx.supabase.co"/>
-      <label>Anon Key</label>
-      <input id="sbKeyEdit" value="${SB_KEY}" placeholder="eyJ..."/>
-      <div style="display:flex;gap:8px;margin-top:4px">
-        <button class="btn btn-primary btn-sm" onclick="updSupabase()">Atualizar</button>
-        <button class="btn btn-sm" onclick="syncFromSupabase()">↻ Sincronizar agora</button>
+      <p class="stitle">Conexão</p>
+      <label>URL do Apps Script</label>
+      <input id="urlEdit" value="${API_URL}" placeholder="https://script.google.com/..."/>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="updUrl()">Atualizar</button>
+        <button class="btn btn-sm" onclick="syncFromSheets()">↻ Sincronizar agora</button>
       </div>
     </div>`;
 }
 async function addTag(k){ const el=document.getElementById('nt_'+k); if(!el||!el.value.trim()) return; S.config[k].push(el.value.trim()); saveL(); render(); await pushConfig(); }
 async function rmTag(k,i){ S.config[k].splice(i,1); saveL(); render(); await pushConfig(); }
-function updSupabase(){
-  const url=document.getElementById('sbUrlEdit').value.trim();
-  const key=document.getElementById('sbKeyEdit').value.trim();
-  if(!url||!key) return;
-  SB_URL=url; SB_KEY=key;
-  localStorage.setItem('gigi_sb_url',url);
-  localStorage.setItem('gigi_sb_key',key);
-  syncFromSupabase();
-}
+function updUrl(){ const v=document.getElementById('urlEdit').value.trim(); if(!v) return; API_URL=v; localStorage.setItem('gigi_api_url',v); syncFromSheets(); }
 
 // ── AUTOCOMPLETE ──────────────────────────────────────────
 let acSelected=-1;
@@ -779,7 +737,7 @@ function selectAC(inputId,dropId,hiddenId,sku,nome){
 async function delInv(sku){
   if(!confirm('Remover item?')) return;
   S.inventario=S.inventario.filter(i=>i.sku!==sku);
-  saveL(); render(); await pushDelete('inventario',sku);
+  saveL(); render(); await pushDelete('Inventario',sku);
 }
 function openInvModal(item){
   const e=item||null, c=S.config;
@@ -830,9 +788,9 @@ async function saveInv(editSku){
       }
     });
     // Remove item antigo do Sheets
-    await pushDelete('inventario', editSku);
+    await pushDelete('Inventario', editSku);
     // Salva listagens atualizadas no Sheets
-    for(const l of updatedListings){ await pushUpsert('listagem', l); }
+    for(const l of updatedListings){ await pushUpsert('Listagem', l); }
   }
   if(editSku){
     S.inventario=S.inventario.filter(i=>i.sku!==editSku);
@@ -840,14 +798,14 @@ async function saveInv(editSku){
   // Always push (replace or new)
   S.inventario=S.inventario.filter(i=>i.sku!==item.sku);
   S.inventario.push(item);
-  saveL(); cm(); render(); await pushUpsert('inventario',item);
+  saveL(); cm(); render(); await pushUpsert('Inventario',item);
 }
 
 // ── CRUD LST ──────────────────────────────────────────────
 async function delLst(id){
   if(!confirm('Remover anúncio?')) return;
   S.listagem=S.listagem.filter(l=>l.id!==id);
-  saveL(); render(); await pushDelete('listagem',id);
+  saveL(); render(); await pushDelete('Listagem',id);
 }
 function openLstModal(item){
   const e=item||null, c=S.config;
@@ -913,10 +871,10 @@ async function saveLst(editId){
     });
   }
   const inv=S.inventario.find(i=>i.sku===sku);
-  if(inv){ inv.statusItem='Listado'; await pushUpsert('inventario',inv); }
+  if(inv){ inv.statusItem='Listado'; await pushUpsert('Inventario',inv); }
   saveL(); cm(); render();
-  await pushUpsert('listagem',listing);
-  for(const ex of expiredItems){ await pushUpsert('listagem',ex); }
+  await pushUpsert('Listagem',listing);
+  for(const ex of expiredItems){ await pushUpsert('Listagem',ex); }
 }
 
 function dupLst(l){
@@ -928,7 +886,7 @@ function cm(){ document.getElementById('mc').innerHTML=''; }
 
 // ── INIT ──────────────────────────────────────────────────
 render();
-if(SB_URL&&SB_KEY) syncFromSupabase();
+if(API_URL) syncFromSheets();
 </script>
 </body>
 </html>
